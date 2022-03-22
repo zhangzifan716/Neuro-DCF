@@ -5,16 +5,13 @@ import glob
 import json
 import os
 import pickle
-
 import gym
 import ray
-
 from ray.rllib.env import MultiAgentEnv
 from ray.rllib.policy.sample_batch import DEFAULT_POLICY_ID
 from ray.rllib.utils.spaces.space_utils import flatten_to_single_ndarray
 from ray.tune.registry import get_trainable_cls
 from ray.tune.utils import merge_dicts
-
 import ns3_rnn_model
 import ns3_gnn_model
 
@@ -23,10 +20,8 @@ def prepare(args, parser):
     # Load configuration from checkpoint file.
     config_dir = os.path.dirname(args.checkpoint)
     config_path = os.path.join(config_dir, "params.pkl")
-    # Try parent directory.
     if not os.path.exists(config_path):
         config_path = os.path.join(config_dir, "../params.pkl")
-
     # If no pkl file found, require command line `--config`.
     if not os.path.exists(config_path):
         if not args.config:
@@ -38,8 +33,6 @@ def prepare(args, parser):
     else:
         with open(config_path, "rb") as f:
             config = pickle.load(f)
-
-    # Set num_workers to be at least 2.
 
     # Merge with `evaluation_config`.
     evaluation_config = copy.deepcopy(config.get("evaluation_config", {}))
@@ -164,10 +157,6 @@ def rollout(agent,
     env.close()
 
 
-# def cleanup(agent):
-#     env = agent.workers.local_worker().env
-
-
 def load_checkpoint(exp_str):
 
     alg = exp_str.split("_")[0]
@@ -217,11 +206,5 @@ if __name__ == "__main__":
     # load checkpoint
     agent = prepare(args, parser)
 
-    # Do the actual rollout.
+    # rollout.
     rollout(agent, args.env, num_episodes=args.episodes)
-
-    # Intensity experiment.
-    # newargs = {"--intensity": 0.1}
-    # for i in range(10):
-    #     rollout(agent, args.env, newargs=newargs)
-    #     newargs["--intensity"] += 0.1

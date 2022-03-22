@@ -4,7 +4,6 @@ import numpy as np
 
 import ray
 from ray import tune
-
 from ray.rllib.agents.ppo.ppo import PPOTrainer
 from ray.rllib.agents.ppo.ppo_tf_policy import PPOLoss, PPOTFPolicy, KLCoeffMixin
 from ray.rllib.evaluation.postprocessing import compute_advantages, Postprocessing
@@ -23,14 +22,14 @@ from ns3_import import import_graph_module
 from ns3_multiagent_env import MyCallbacks, ns3_execution_plan
 
 graph = import_graph_module()
-
 tf = try_import_tf()
 
+# Declare final values
 ALL_OBS = "all_obs"
 ALL_ACT = "all_act"
 ADJ = "adj"
 
-
+# Graph Convolutional Layer for GNN model
 class GraphConvLayer(tf.keras.layers.Layer):
     def __init__(
             self,
@@ -51,27 +50,23 @@ class GraphConvLayer(tf.keras.layers.Layer):
                 name="w",
                 shape=(self.input_dim, self.output_dim),
                 initializer=tf.initializers.glorot_uniform())
-
             if self.use_bias:
                 self.b = tf.get_variable(
                     name="b",
                     initializer=tf.constant(0.1, shape=(self.output_dim,)))
 
+    # Prepare the matrix with proper norms
     def call(self, adj_norm, x):
-        x = tf.matmul(x, self.w)    # XW
-        x = tf.matmul(adj_norm, x)  # AXW
+        x = tf.matmul(x, self.w)
+        x = tf.matmul(adj_norm, x)
 
         if self.use_bias:
-            x = tf.add(x, self.b)   # AXW + B
-        
+            x = tf.add(x, self.b)   
         if self.activation is not None:
-            x = self.activation(x)  # activation(AXW + B)
-        
+            x = self.activation(x)      
         return x
-
-
+    
 class Ns3GNNModel(RecurrentNetwork):
-
     def __init__(self,
                  obs_space,
                  action_space,
@@ -81,6 +76,7 @@ class Ns3GNNModel(RecurrentNetwork):
                  hiddens_size=256,
                  cell_size=64,
                  n_agents=3):
+        
         super(Ns3GNNModel, self).__init__(
             obs_space, action_space, num_outputs, model_config, name)
         self.cell_size = cell_size
@@ -92,7 +88,6 @@ class Ns3GNNModel(RecurrentNetwork):
         # policy network
         self.rnn_model = self._policy_network(hiddens_size, cell_size)
         self.register_variables(self.rnn_model.variables)
-
         # value network
         self.gnn_vf = self._value_network(32)
         self.register_variables(self.gnn_vf.variables)
@@ -106,7 +101,7 @@ class Ns3GNNModel(RecurrentNetwork):
         state_in_c = tf.keras.layers.Input(shape=(cell_size,), name="c")
         seq_in = tf.keras.layers.Input(shape=(), name="seq_in", dtype=tf.int32)
 
-        # Preprocess observation with a hidden layer and send to LSTM cell
+        # Preprocess observation with a hidden layer
         dense = tf.keras.layers.Dense(
             hiddens_size, activation=tf.nn.relu, name="dense")(inputs)
         lstm_out, state_h, state_c = tf.keras.layers.LSTM(
@@ -115,7 +110,8 @@ class Ns3GNNModel(RecurrentNetwork):
                 mask=tf.sequence_mask(seq_in),
                 initial_state=[state_in_h, state_in_c])
 
-        # Postprocess LSTM output with another hidden layer and compute values
+        # Postprocess LSTM output with another hidden layer
+        
         # logits: output of policy network
         logits = tf.keras.layers.Dense(
             self.num_outputs,
@@ -125,7 +121,7 @@ class Ns3GNNModel(RecurrentNetwork):
         values = tf.keras.layers.Dense(
             1, activation=None, name="values")(lstm_out)
 
-        # Create RNN model
+        # Create RNN model as the policy network
         return tf.keras.Model(
             inputs=[inputs, seq_in, state_in_h, state_in_c],
             outputs=[logits, values, state_h, state_c])
@@ -133,31 +129,30 @@ class Ns3GNNModel(RecurrentNetwork):
     def _value_network(self, hiddens_size):
 
         all_obs = tf.keras.layers.Input(
-            shape=(self.n_agents, self.obs_dim), name="all_obs")  # (B, N, O)
+            shape=(self.n_agents, self.obs_dim), name="all_obs")
         all_act = tf.keras.layers.Input(
-            shape=(self.n_agents, self.act_dim), name="all_act")  # (B, N, A)
+            shape=(self.n_agents, self.act_dim), name="all_act")
         adj = tf.keras.layers.Input(
-            shape=(self.n_agents, self.n_agents), name="adj")  # (B, N, N)
+            shape=(self.n_agents, self.n_agents), name="adj")
 
         other_feat = tf.concat(
-            [all_obs[:, 1:, :], all_act[:, 1:, :]], axis=-1)  # (B, N-1, O+A)
+            [all_obs[:, 1:, :], all_act[:, 1:, :]], axis=-1)
         other_dense = tf.keras.layers.Dense(
-            hiddens_size, activation=tf.nn.tanh, name="other_dense")(other_feat)  # (B, N-1, H)
+            hiddens_size, activation=tf.nn.tanh, name="other_dense")(other_feat)
         
-        # exclude my actions for counterfactual calculation
+        # exclude actions for counterfactual calculation
         obs_dense = tf.keras.layers.Dense(
-            hiddens_size, activation=tf.nn.tanh, name="obs_dense")(all_obs[:, :1, :])  # (B, 1, H)
+            hiddens_size, activation=tf.nn.tanh, name="obs_dense")(all_obs[:, :1, :])
 
         # gather features for graph operation
         gnn_vf_in = tf.concat([obs_dense, other_dense], axis=1)  # (B, N, H)
 
-        # GCN operation
+        # Call the previous GCN operation
         gnn_vf_dense1 = GraphConvLayer(
                             input_dim=hiddens_size,
                             output_dim=hiddens_size,
                             name="gcn1",
                             activation=tf.nn.tanh)(adj, gnn_vf_in)
-        
         gnn_vf_dense2 = GraphConvLayer(
                             input_dim=hiddens_size,
                             output_dim=hiddens_size,
@@ -165,15 +160,15 @@ class Ns3GNNModel(RecurrentNetwork):
                             activation=tf.nn.tanh)(adj, gnn_vf_dense1)
         
         gnn_vf_agg = tf.keras.layers.Dense(
-            hiddens_size, activation=tf.nn.tanh, name="gnn_vf_agg")(gnn_vf_dense2)  # (B, N, H)
-        gnn_vf_agg = tf.reduce_sum(gnn_vf_agg, axis=1)  # (B, H)
-
+            hiddens_size, activation=tf.nn.tanh, name="gnn_vf_agg")(gnn_vf_dense2)
+        gnn_vf_agg = tf.reduce_sum(gnn_vf_agg, axis=1)
         gnn_vf_out = tf.keras.layers.Dense(
             1, activation=None, name="gnn_vf_out")(gnn_vf_agg)
         
         return tf.keras.Model(
             inputs=[all_obs, all_act, adj], outputs=gnn_vf_out)
 
+    # Reset the previous networks and models
     @override(RecurrentNetwork)
     def forward_rnn(self, inputs, rnn_state, seq_lens):
         # rnn_state: [h, c]
@@ -205,14 +200,14 @@ class GNNValueMixin:
         self.compute_gnn_vf = make_tf_callable(self.get_session())(
             self.model.gnn_value_function)
 
-
+# Postprocess the critic as stated
 def gnn_critic_postprocessing(policy, sample_batch, other_agent_batches=None, episode=None):
 
     n_agents = policy.model.n_agents
     obs_dim = sample_batch[SampleBatch.CUR_OBS].shape[-1]
 
     if not policy.loss_initialized():
-
+        # Initialize the policy
         sample_batch[ALL_OBS] = np.zeros(
             (1, n_agents, obs_dim), dtype=np.float32)
         sample_batch[ALL_ACT] = np.zeros((1, n_agents), dtype=np.int32)
@@ -222,7 +217,7 @@ def gnn_critic_postprocessing(policy, sample_batch, other_agent_batches=None, ep
             sample_batch[SampleBatch.REWARDS], dtype=np.float32)
     
     else:
-        assert sample_batch["dones"][-1], "Not implemented for train_batch_mode=truncated_episodes"
+        assert sample_batch["dones"][-1], "Not implemented for train_batch_mode"
         assert other_agent_batches is not None
 
         # find the id that is not in other_agent_batches
@@ -274,16 +269,14 @@ def gnn_critic_postprocessing(policy, sample_batch, other_agent_batches=None, ep
         use_gae=policy.config["use_gae"])
     return train_batch
 
-
+# Compute the loss function
 def loss_with_gnn_critic(policy, model, dist_class, train_batch):
     GNNValueMixin.__init__(policy)
 
     logits, state = model.from_batch(train_batch)
     action_dist = dist_class(logits, model)
-
     policy.gnn_value_out = policy.model.gnn_value_function(
         train_batch[ALL_OBS], train_batch[ALL_ACT], train_batch[ADJ])
-    
     mask = tf.ones_like(train_batch[Postprocessing.ADVANTAGES], dtype=tf.bool)
 
     policy.loss_obj = PPOLoss(
@@ -309,12 +302,10 @@ def loss_with_gnn_critic(policy, model, dist_class, train_batch):
 
 
 def setup_mixins(policy, obs_space, action_space, config):
-    # Copied from PPO
     KLCoeffMixin.__init__(policy, config)
     EntropyCoeffSchedule.__init__(policy, config["entropy_coeff"],
                                   config["entropy_coeff_schedule"])
     LearningRateSchedule.__init__(policy, config["lr"], config["lr_schedule"])
-
 
 def gnn_vf_stats(policy, train_batch, grads):
     # Report the explained variance of the gnn value function

@@ -1,9 +1,7 @@
 import argparse
 import numpy as np
-
 import ray
 from ray import tune
-
 from ray.rllib.agents.ppo.ppo import PPOTrainer
 from ray.rllib.models import ModelCatalog
 from ray.rllib.models.modelv2 import ModelV2
@@ -11,12 +9,10 @@ from ray.rllib.models.tf.recurrent_net import RecurrentNetwork
 from ray.rllib.utils import merge_dicts
 from ray.rllib.utils.annotations import override
 from ray.rllib.utils.framework import try_import_tf
-
 from ns3_import import import_graph_module
 from ns3_multiagent_env import MyCallbacks, ns3_execution_plan
 
 graph = import_graph_module()
-
 tf = try_import_tf()
 
 class Ns3RNNModel(RecurrentNetwork):
